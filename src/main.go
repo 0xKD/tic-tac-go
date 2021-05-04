@@ -59,12 +59,24 @@ func (game *Game) printBoard() {
 	log.Println(game.getRepresentation())
 }
 
+const SIZE = 3
+
+type Sol struct {
+	s State
+
+	// set to -1 to invalidate
+	count int8
+}
+
 type Game struct {
 	// represent state of the board
-	Board [9]State
+	Board    [SIZE * SIZE]State
+	Solution [SIZE*SIZE + 2]Sol
 
-	// game ends when Moves == 9
 	Moves int8
+
+	// game ends when Moves == (SIZE * SIZE) or when someone wins
+	Done bool
 
 	// maintain connections for both players
 	PlayerOne *Player
@@ -112,9 +124,9 @@ type InternalUserMessage struct {
 // SystemMessage response from server
 // Represents game state, current player and any message
 type SystemMessage struct {
-	Board         [9]State `json:"board"`
-	CurrentPlayer State    `json:"current_player"`
-	Message       string   `json:"message"`
+	Board         [SIZE * SIZE]State `json:"board"`
+	CurrentPlayer State              `json:"current_player"`
+	Message       string             `json:"message"`
 }
 
 func makeSystemMessage(game *Game, message string) SystemMessage {
@@ -129,8 +141,39 @@ type Player struct {
 	moves chan UserMessage
 }
 
-// Determine if board is in an end-state
-func (game *Game) isDone() bool {
+// returns true if board is in end-state and "move" has won
+func (game *Game) updateSolution(pos int, move State) bool {
+	x, y := pos / SIZE, pos % SIZE
+	row, col := x, y + SIZE
+	var toCheck = []int{row, col}
+
+	// add check for SIZE % 2 == 1 if it becomes dynamic
+	flippedY := (y + ((SIZE - y) * 2)) % SIZE
+	if x == y {
+		toCheck = append(toCheck, SIZE-1)
+	}
+	if x == flippedY {
+		toCheck = append(toCheck, SIZE-2)
+	}
+
+	for _, v := range toCheck {
+		if game.Solution[v].count == -1 {
+			continue
+		}
+
+		if game.Solution[v].count == 0 {
+			// initial condition
+			game.Solution[v] = Sol{move, 1}
+		} else if game.Solution[v].s != move {
+			// contains some other state already, invalidate
+			game.Solution[v].count = -1
+		} else {
+			game.Solution[v].count += 1
+			if game.Solution[v].count >= SIZE {
+				return true
+			}
+		}
+	}
 	return false
 }
 
@@ -138,12 +181,12 @@ func (game *Game) isDone() bool {
 func (game *Game) update(pos int, move State) (bool, error) {
 	if pos > len(game.Board) {
 		return false, errors.New("not found")
-	} else if !game.Board[pos].isEmpty()  {
+	} else if !game.Board[pos].isEmpty() {
 		return false, errors.New("this seat is taken")
 	} else {
 		game.Board[pos] = move
 		game.Moves++
-		return true, nil
+		return game.updateSolution(pos, move), nil
 	}
 }
 
@@ -162,15 +205,21 @@ func (game *Game) processInputs() {
 	for {
 		select {
 		case i := <-game.Inputs:
-			if i.player.char == game.getCurrentPlayer() &&
-				!game.isDone() {
-				if _, err := game.update(i.message.Position, i.player.char); err != nil {
+			if i.player.char == game.getCurrentPlayer() && !game.Done {
+				if finished, err := game.update(i.message.Position, i.player.char); err != nil {
 					sendMessage(i.player.connection, []byte(fmt.Sprint(err)))
 				} else {
-					game.Broadcast <- makeSystemMessage(game, "sup!")
+					game.Done = finished || game.Moves == int8(len(game.Board))
+					var text string
+					if finished {
+						text = "fin!"
+					} else {
+						text = "..."
+					}
+					game.Broadcast <- makeSystemMessage(game, text)
 				}
 			} else {
-				if game.isDone() {
+				if game.Done {
 					sendMessage(i.player.connection, []byte("Game's done, go home!"))
 				} else {
 					sendMessage(i.player.connection, []byte("not your turn yet!"))
