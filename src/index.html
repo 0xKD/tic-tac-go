@@ -6,6 +6,24 @@
         content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
   <meta http-equiv="X-UA-Compatible" content="ie=edge">
   <title>Tic Tac Go</title>
+  <style>
+    .board th, .board td {
+      border: 1px solid #bebebe;
+      border-collapse: collapse;
+    }
+    .board table {
+      border-collapse: collapse;
+    }
+    .board {
+      margin-top: 2rem;
+      font-family: monospace;
+      font-size: 5rem;
+    }
+    .board td {
+      width: 5rem;
+      text-align: center;
+    }
+  </style>
 </head>
 <body>
 <table>
@@ -27,6 +45,25 @@
     </td>
   </tr>
 </table>
+<div class="board">
+  <table>
+    <tr>
+      <td id="pos-0">&nbsp;</td>
+      <td id="pos-1">&nbsp;</td>
+      <td id="pos-2">&nbsp;</td>
+    </tr>
+    <tr>
+      <td id="pos-3">&nbsp;</td>
+      <td id="pos-4">&nbsp;</td>
+      <td id="pos-5">&nbsp;</td>
+    </tr>
+    <tr>
+      <td id="pos-6">&nbsp;</td>
+      <td id="pos-7">&nbsp;</td>
+      <td id="pos-8">&nbsp;</td>
+    </tr>
+  </table>
+</div>
 <script>
   (function () {
     var output = document.getElementById("output");
