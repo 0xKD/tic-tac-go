@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
-	"strconv"
+	//"strconv"
 	"sync"
 )
 
@@ -13,24 +16,27 @@ var addr = flag.String("addr", "localhost:8080", "http service address")
 
 var upgrader = websocket.Upgrader{} // use default options
 
-type Position struct {
-	X bool
-	O bool
+type State int8
+
+const (
+	X State = 1
+	O State = 2
+)
+
+func (s State) isX() bool {
+	return s == X
 }
 
-func (s Position) isX() bool {
-	return s.X == true
+func (s State) isO() bool {
+	return s == O
 }
 
-func (s Position) isO() bool {
-	return s.O == true
+func (s State) isEmpty() bool {
+	return !s.isX() && !s.isO()
 }
 
-func (s Position) isEmpty() bool {
-	return s.X == false && s.O == false
-}
-
-func (game Game) getRepresentation() string {
+// for debugging purposes
+func (game *Game) getRepresentation() string {
 	repr := ""
 	for index, pos := range game.Board {
 		if pos.isEmpty() {
@@ -38,7 +44,7 @@ func (game Game) getRepresentation() string {
 		} else if pos.isX() {
 			repr += "X"
 		} else if pos.isO() {
-			repr += "Y"
+			repr += "O"
 		}
 		if (index+1)%3 == 0 {
 			repr += "\n"
@@ -49,13 +55,13 @@ func (game Game) getRepresentation() string {
 	return repr
 }
 
-func (game Game) printBoard() {
+func (game *Game) printBoard() {
 	log.Println(game.getRepresentation())
 }
 
 type Game struct {
 	// represent state of the board
-	Board [9]Position
+	Board [9]State
 
 	// game ends when Moves == 9
 	Moves int8
@@ -64,42 +70,124 @@ type Game struct {
 	PlayerOne *Player
 	PlayerTwo *Player
 
+	// to send to players
+	Broadcast chan SystemMessage
+
+	// messages or moves incoming from user
+	Inputs chan InternalUserMessage
+
 	// locking mechanism for operations on the board
 	mutex sync.RWMutex
 }
 
-func (g *Game) getCurrentPlayer() int8 {
-	return g.Moves % int8(2)
+func createGame() *Game {
+	g := Game{}
+	g.Broadcast = make(chan SystemMessage)
+	g.Inputs = make(chan InternalUserMessage)
+	return &g
+}
+
+func (game *Game) getCurrentPlayer() State {
+	if game.Moves%int8(2) == 0 {
+		return X
+	} else {
+		return O
+	}
+}
+
+// UserMessage incoming payload from user
+type UserMessage struct {
+	//Move     State `json:"move"`
+	Position int `json:"position"`
+
+	// for trash-talk
+	Message string `json:"message"`
+}
+
+type InternalUserMessage struct {
+	message UserMessage
+	player  *Player
+}
+
+// SystemMessage response from server
+// Represents game state, current player and any message
+type SystemMessage struct {
+	Board         [9]State `json:"board"`
+	CurrentPlayer State    `json:"current_player"`
+	Message       string   `json:"message"`
+}
+
+func makeSystemMessage(game *Game, message string) SystemMessage {
+	return SystemMessage{game.Board, game.getCurrentPlayer(), message}
 }
 
 type Player struct {
-	// todo: might need refernce to game to remove itself on connection close/death?
 	connection *websocket.Conn
-	moves      chan int8
+
+	// whether player is X or O
+	char  State
+	moves chan UserMessage
 }
 
-func (game *Game) run() {
+// Determine if board is in an end-state
+func (game *Game) isDone() bool {
+	return false
+}
+
+// Assumes player-check is done by caller
+func (game *Game) update(pos int, move State) (bool, error) {
+	if pos > len(game.Board) {
+		return false, errors.New("not found")
+	} else if !game.Board[pos].isEmpty()  {
+		return false, errors.New("this seat is taken")
+	} else {
+		game.Board[pos] = move
+		game.Moves++
+		return true, nil
+	}
+}
+
+func (game *Game) connections() []*websocket.Conn {
+	var connections []*websocket.Conn
+	if game.PlayerOne != nil {
+		connections = append(connections, game.PlayerOne.connection)
+	}
+	if game.PlayerTwo != nil {
+		connections = append(connections, game.PlayerTwo.connection)
+	}
+	return connections
+}
+
+func (game *Game) processInputs() {
 	for {
 		select {
-		case playerOneMove := <-game.PlayerOne.moves:
-			// todo: check if board position is not already occuppied
-			if game.getCurrentPlayer() != 0 {
-				sendMessage(game.PlayerOne.connection, []byte("Not your turn!"))
+		case i := <-game.Inputs:
+			if i.player.char == game.getCurrentPlayer() &&
+				!game.isDone() {
+				if _, err := game.update(i.message.Position, i.player.char); err != nil {
+					sendMessage(i.player.connection, []byte(fmt.Sprint(err)))
+				} else {
+					game.Broadcast <- makeSystemMessage(game, "sup!")
+				}
 			} else {
-				game.Board[playerOneMove] = Position{true, false}
-				game.Moves += 1
-				game.printBoard()
+				if game.isDone() {
+					sendMessage(i.player.connection, []byte("Game's done, go home!"))
+				} else {
+					sendMessage(i.player.connection, []byte("not your turn yet!"))
+				}
 			}
-			// log.Println("hello1:", playerOneMove)
-		case playerTwoMove := <-game.PlayerTwo.moves:
-			if game.getCurrentPlayer() != 1 {
-				sendMessage(game.PlayerTwo.connection, []byte("Not your turn!"))
-			} else {
-				game.Board[playerTwoMove] = Position{false, true}
-				game.Moves += 1
-				game.printBoard()
+		}
+	}
+}
+
+func (game *Game) processBroadcast() {
+	for {
+		select {
+		case b := <-game.Broadcast:
+			for _, c := range game.connections() {
+				payload, _ := json.Marshal(b)
+				sendMessage(c, payload)
 			}
-			// log.Println("hello2:", playerTwoMove)
 		}
 	}
 }
@@ -118,30 +206,31 @@ func sendMessage(con *websocket.Conn, message []byte) {
 
 var master = Master{}
 
-func echo(w http.ResponseWriter, r *http.Request) {
+func createPlayer(conn *websocket.Conn, char State) *Player {
+	return &Player{conn, char, make(chan UserMessage)}
+}
+
+func play(w http.ResponseWriter, r *http.Request) {
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Print("upgrade:", err)
+		log.Println("upgrade:", err)
 		return
 	}
 	defer c.Close()
 
 	var p *Player
-	if master.Games["game1"].PlayerOne == nil {
-		p = &Player{c, make(chan int8)}
-		master.Games["game1"].PlayerOne = p
-		sendMessage(c, []byte("You are player one!"))
-	} else if master.Games["game1"].PlayerTwo == nil {
-		p = &Player{c, make(chan int8)}
-		master.Games["game1"].PlayerTwo = p
-		sendMessage(c, []byte("You are player two!"))
-		go (master.Games["game1"]).run()
+	game := master.Games["game1"]
+	if game.PlayerOne == nil {
+		p = createPlayer(c, X)
+		game.PlayerOne = p
+		game.Broadcast <- makeSystemMessage(game, "Player one has joined")
+	} else if game.PlayerTwo == nil {
+		p = createPlayer(c, O)
+		game.PlayerTwo = p
+		game.Broadcast <- makeSystemMessage(game, "Player two has joined, let's begin!")
 	} else {
 		p = nil
 		sendMessage(c, []byte("Cannot join this game!"))
-	}
-
-	if p == nil {
 		return
 	}
 
@@ -151,12 +240,11 @@ func echo(w http.ResponseWriter, r *http.Request) {
 			log.Println("read:", err)
 			break
 		}
-		val, err := strconv.Atoi(string(message))
-		if err != nil {
-			log.Println("invalid input:", err)
-			// break
+		var msg UserMessage
+		if err = json.Unmarshal(message, &msg); err != nil {
+			sendMessage(c, []byte("Invalid message format!"))
 		} else {
-			p.moves <- int8(val)
+			game.Inputs <- InternalUserMessage{msg, p}
 		}
 	}
 }
@@ -167,12 +255,14 @@ func home(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	master.Games = make(map[string]*Game)
-	master.Games["game1"] = &Game{}
+	master.Games["game1"] = createGame()
+	go (master.Games["game1"]).processInputs()
+	go (master.Games["game1"]).processBroadcast()
 
 	log.Println("Starting...")
 	flag.Parse()
 	log.SetFlags(0)
-	http.HandleFunc("/echo", echo)
+	http.HandleFunc("/play", play)
 	http.HandleFunc("/", home)
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
