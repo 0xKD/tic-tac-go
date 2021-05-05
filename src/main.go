@@ -141,22 +141,36 @@ type Player struct {
 	moves chan UserMessage
 }
 
+func getCharText(move State) string {
+	if move == X {
+		return "X"
+	} else if move == O {
+		return "O"
+	} else {
+		return "?"
+	}
+}
+
 // returns true if board is in end-state and "move" has won
 func (game *Game) updateSolution(pos int, move State) bool {
-	x, y := pos / SIZE, pos % SIZE
-	row, col := x, y + SIZE
+	x, y := pos/SIZE, pos%SIZE
+	row, col := x, y+SIZE
 	var toCheck = []int{row, col}
 
 	// add check for SIZE % 2 == 1 if it becomes dynamic
-	flippedY := (y + ((SIZE - y) * 2)) % SIZE
+	flippedY := 2*(SIZE/2) - y
 	if x == y {
-		toCheck = append(toCheck, SIZE-1)
+		toCheck = append(toCheck, len(game.Solution)-1)
 	}
 	if x == flippedY {
-		toCheck = append(toCheck, SIZE-2)
+		toCheck = append(toCheck, len(game.Solution)-2)
 	}
 
 	for _, v := range toCheck {
+		//log.Printf(
+		//	"fin. v=%d, pos=%d, move=%s (x=%d, y=%d, fY=%d)",
+		//	v, pos, getCharText(move), x, y, flippedY)
+
 		if game.Solution[v].count == -1 {
 			continue
 		}
@@ -205,14 +219,16 @@ func (game *Game) processInputs() {
 	for {
 		select {
 		case i := <-game.Inputs:
-			if i.player.char == game.getCurrentPlayer() && !game.Done {
+			if len(game.connections()) != 2 {
+				game.Broadcast <- makeSystemMessage(game, "Wait for all players to join!")
+			} else if i.player.char == game.getCurrentPlayer() && !game.Done {
 				if finished, err := game.update(i.message.Position, i.player.char); err != nil {
 					sendMessage(i.player.connection, []byte(fmt.Sprint(err)))
 				} else {
 					game.Done = finished || game.Moves == int8(len(game.Board))
 					var text string
 					if finished {
-						text = "fin!"
+						text = getCharText(i.player.char) + " has won!"
 					} else {
 						text = "..."
 					}
@@ -265,10 +281,27 @@ func play(w http.ResponseWriter, r *http.Request) {
 		log.Println("upgrade:", err)
 		return
 	}
-	defer c.Close()
 
 	var p *Player
 	game := master.Games["game1"]
+
+	defer func(c *websocket.Conn, game *Game) {
+		err := c.Close()
+		if err != nil {
+			log.Println("Error closing websocket:", err)
+		}
+
+		if game.PlayerOne != nil && game.PlayerOne.connection == c {
+			log.Println("closing..")
+			game.PlayerOne = nil
+			game.Broadcast <- makeSystemMessage(game, "Someone left the game...")
+		} else if game.PlayerTwo != nil && game.PlayerTwo.connection == c {
+			log.Println("closing..")
+			game.PlayerTwo = nil
+			game.Broadcast <- makeSystemMessage(game, "Someone left the game...")
+		}
+	}(c, game)
+
 	if game.PlayerOne == nil {
 		p = createPlayer(c, X)
 		game.PlayerOne = p
