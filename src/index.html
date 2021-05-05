@@ -1,115 +1,144 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <title>Tic Tac Go</title>
   <meta charset="UTF-8">
   <meta name="viewport"
         content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
   <meta http-equiv="X-UA-Compatible" content="ie=edge">
-  <title>Tic Tac Go</title>
   <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
+      line-height: 1.2;
+    }
+    .container {
+      max-width: 720px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
     .board th, .board td {
-      border: 1px solid #bebebe;
+      border: 4px dashed darkgray;
       border-collapse: collapse;
     }
     .board table {
       border-collapse: collapse;
     }
     .board {
-      margin-top: 2rem;
-      font-family: monospace;
-      font-size: 5rem;
+      font-family: "serif";
+      font-size: 4rem;
+      margin-top: 1rem;
     }
     .board td {
       width: 5rem;
       text-align: center;
     }
+    .tile {
+      cursor: pointer;
+    }
+    .tile--filled {
+      cursor: not-allowed;
+    }
+    #infobox {
+      box-sizing: border-box;
+      padding: .5rem;
+      background-color: #e9e9e9;
+      display: inline-block;
+      border-radius: 4px;
+      min-width: 15rem;
+      max-width: 100%;
+    }
   </style>
 </head>
 <body>
-<table>
-  <tr>
-    <td valign="top" width="50%">
-      <p>Click "Open" to create a connection to the server,
-        "Send" to send a message to the server and "Close" to close the connection.
-        You can change the message and send multiple times.
-      <p>
-      <form>
-        <button id="open">Open</button>
-        <button id="close">Close</button>
-        <p><input id="input" type="text" value="Hello world!">
-          <button id="send">Send</button>
-      </form>
-    </td>
-    <td valign="top" width="50%">
-      <div id="output" style="max-height: 70vh;overflow-y: scroll;"></div>
-    </td>
-  </tr>
-</table>
-<div class="board">
-  <table>
-    <tr>
-      <td id="pos-0">&nbsp;</td>
-      <td id="pos-1">&nbsp;</td>
-      <td id="pos-2">&nbsp;</td>
-    </tr>
-    <tr>
-      <td id="pos-3">&nbsp;</td>
-      <td id="pos-4">&nbsp;</td>
-      <td id="pos-5">&nbsp;</td>
-    </tr>
-    <tr>
-      <td id="pos-6">&nbsp;</td>
-      <td id="pos-7">&nbsp;</td>
-      <td id="pos-8">&nbsp;</td>
-    </tr>
-  </table>
-</div>
+  <div class="container">
+    <h1>Tic Tac Go!</h1>
+    <span id="infobox">&nbsp;</span>
+    <br>
+    <div class="board">
+      <table>
+        <tr>
+          <td class="tile" data-pos="0">&nbsp;</td>
+          <td class="tile" data-pos="1">&nbsp;</td>
+          <td class="tile" data-pos="2">&nbsp;</td>
+        </tr>
+        <tr>
+          <td class="tile" data-pos="3">&nbsp;</td>
+          <td class="tile" data-pos="4">&nbsp;</td>
+          <td class="tile" data-pos="5">&nbsp;</td>
+        </tr>
+        <tr>
+          <td class="tile" data-pos="6">&nbsp;</td>
+          <td class="tile" data-pos="7">&nbsp;</td>
+          <td class="tile" data-pos="8">&nbsp;</td>
+        </tr>
+      </table>
+    </div>
+  </div>
 <script>
   (function () {
-    var output = document.getElementById("output");
-    var input = document.getElementById("input");
+    var updateText = function(text) {
+      document.getElementById("infobox").innerText = text;
+    }
+
     var ws;
-    var print = function (message) {
-      var d = document.createElement("div");
-      d.textContent = message;
-      output.appendChild(d);
-      output.scroll(0, output.scrollHeight);
-    };
-    document.getElementById("open").onclick = function (evt) {
+    var initialise = function () {
       if (ws) {
         return false;
       }
       ws = new WebSocket("ws://localhost:8080/play");
       ws.onopen = function (evt) {
-        print("OPEN");
+        updateText("Connected to the game!");
       }
       ws.onclose = function (evt) {
-        print("CLOSE");
+        updateText("Lost connection to the game...");
         ws = null;
       }
       ws.onmessage = function (evt) {
-        print("RESPONSE: " + evt.data);
+        try {
+          var payload = JSON.parse(evt.data);
+          updateBoard(payload.board)
+          updateText(payload.message ? payload.message : "...");
+        } catch (SyntaxError) {
+          // console.warn("Error parsing response:", evt.data)
+          updateText(evt.data);
+        }
       }
       ws.onerror = function (evt) {
-        print("ERROR: " + evt.data);
+        updateText("Something went wrong...");
       }
       return false;
     };
-    document.getElementById("send").onclick = function (evt) {
-      if (!ws) {
-        return false;
+
+    var positions = document.getElementsByClassName("tile");
+    var BOARD = [];
+    for (var i = 0; i < positions.length; i++) {
+      var tile = positions.item(i)
+      BOARD[tile.dataset.pos] = tile;
+      tile.addEventListener("click", function(pos) {
+        return function(e) {
+          ws ? ws.send(JSON.stringify({"position": pos})) : null;
+        }
+      }(i));
+    }
+
+    var EMPTY = "&nbsp;";
+    function updateBoard(board) {
+      if (board.length !== BOARD.length) {
+        console.warn("What game you playing..");
+        return
       }
-      print("SEND: " + input.value);
-      ws.send(input.value);
-      return false;
-    };
-    document.getElementById("close").onclick = function (evt) {
-      if (!ws) {
-        return false;
+
+      for (var i = 0; i < board.length; i++) {
+        if (board[i] === 0) {
+          BOARD[i].innerHTML = EMPTY;
+          BOARD[i].classList.remove("tile--filled");
+        } else {
+          BOARD[i].innerHTML = board[i] === 1 ? "X" : "O";
+          BOARD[i].classList.add("tile--filled");
+        }
       }
-      ws.close();
-      return false;
-    };
+    }
+    initialise();
   }());
 </script>
 </body>
