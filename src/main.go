@@ -83,7 +83,7 @@ type Game struct {
 	PlayerTwo *Player
 
 	// to send to players
-	Broadcast chan SystemMessage
+	Broadcast chan BroadcastMessage
 
 	// messages or moves incoming from user
 	Inputs chan InternalUserMessage
@@ -94,7 +94,7 @@ type Game struct {
 
 func createGame() *Game {
 	g := Game{}
-	g.Broadcast = make(chan SystemMessage)
+	g.Broadcast = make(chan BroadcastMessage)
 	g.Inputs = make(chan InternalUserMessage)
 	return &g
 }
@@ -121,16 +121,17 @@ type InternalUserMessage struct {
 	player  *Player
 }
 
-// SystemMessage response from server
+// BroadcastMessage response from server
 // Represents game state, current player and any message
-type SystemMessage struct {
+type BroadcastMessage struct {
 	Board         [SIZE * SIZE]State `json:"board"`
 	CurrentPlayer State              `json:"current_player"`
 	Message       string             `json:"message"`
 }
 
-func makeSystemMessage(game *Game, message string) SystemMessage {
-	return SystemMessage{game.Board, game.getCurrentPlayer(), message}
+func (game *Game) broadcast(message string) {
+	msg := BroadcastMessage{game.Board, game.getCurrentPlayer(), message}
+	game.Broadcast <- msg
 }
 
 type Player struct {
@@ -220,7 +221,7 @@ func (game *Game) processInputs() {
 		select {
 		case i := <-game.Inputs:
 			if len(game.connections()) != 2 {
-				game.Broadcast <- makeSystemMessage(game, "Wait for all players to join!")
+				game.broadcast("Wait for all players to join!")
 			} else if i.player.char == game.getCurrentPlayer() && !game.Done {
 				if finished, err := game.update(i.message.Position, i.player.char); err != nil {
 					sendMessage(i.player.connection, []byte(fmt.Sprint(err)))
@@ -232,7 +233,7 @@ func (game *Game) processInputs() {
 					} else {
 						text = "..."
 					}
-					game.Broadcast <- makeSystemMessage(game, text)
+					game.broadcast(text)
 				}
 			} else {
 				if game.Done {
@@ -292,24 +293,24 @@ func play(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if game.PlayerOne != nil && game.PlayerOne.connection == c {
-			log.Println("closing..")
+			//log.Println("closing..")
 			game.PlayerOne = nil
-			game.Broadcast <- makeSystemMessage(game, "Someone left the game...")
+			game.broadcast("Someone left the game...")
 		} else if game.PlayerTwo != nil && game.PlayerTwo.connection == c {
-			log.Println("closing..")
+			//log.Println("closing..")
 			game.PlayerTwo = nil
-			game.Broadcast <- makeSystemMessage(game, "Someone left the game...")
+			game.broadcast("Someone left the game...")
 		}
 	}(c, game)
 
 	if game.PlayerOne == nil {
 		p = createPlayer(c, X)
 		game.PlayerOne = p
-		game.Broadcast <- makeSystemMessage(game, "Player one has joined")
+		game.broadcast("Player one has joined")
 	} else if game.PlayerTwo == nil {
 		p = createPlayer(c, O)
 		game.PlayerTwo = p
-		game.Broadcast <- makeSystemMessage(game, "Player two has joined, let's begin!")
+		game.broadcast("Player two has joined, let's begin!")
 	} else {
 		p = nil
 		sendMessage(c, []byte("Cannot join this game!"))
