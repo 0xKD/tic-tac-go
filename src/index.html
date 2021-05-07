@@ -7,14 +7,49 @@
         content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
   <meta http-equiv="X-UA-Compatible" content="ie=edge">
   <style>
+    .info-msg,
+    .success-msg,
+    .warning-msg,
+    .error-msg {
+      /*margin: 10px 0;*/
+      padding: 10px;
+      border-radius: 3px 3px 3px 3px;
+    }
+
+    .info-msg {
+      color: #059;
+      background-color: #e1f3ff;
+    }
+
+    .success-msg {
+      color: #270;
+      background-color: #ecffd0;
+    }
+
+    .warning-msg {
+      color: #9F6000;
+      background-color: #FEEFB3;
+    }
+
+    .error-msg {
+      color: #D8000C;
+      background-color: #ffc9c9;
+    }
+  </style>
+  <style>
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
       line-height: 1.2;
+      display: flex;
     }
     .container {
       max-width: 720px;
-      margin: 2rem auto;
+      margin: 0 auto;
       padding: 0 1rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      /*align-items: center;*/
     }
     .board th, .board td {
       border: 4px dashed darkgray;
@@ -38,22 +73,31 @@
     .tile--filled {
       cursor: not-allowed;
     }
-    #infobox {
+    #info-container {
       box-sizing: border-box;
       padding: .5rem;
-      background-color: #e9e9e9;
       display: inline-block;
       border-radius: 4px;
-      min-width: 15rem;
-      max-width: 100%;
+      /*max-width: 100%;*/
+      max-width: 16rem;
+      margin-top: 1rem;
+    }
+    nav a {
+      color: #5e5e5e;
+      text-decoration: none;
+      background-color: lightgoldenrodyellow;
+      padding: 4px;
+      border: 1px solid #bfbfbf;
+      border-radius: 4px;
     }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>Tic Tac Go!</h1>
-    <span id="infobox">&nbsp;</span>
-    <br>
+    <nav>
+      <a href="/">New Game</a>
+    </nav>
     <div class="board">
       <table>
         <tr>
@@ -73,62 +117,108 @@
         </tr>
       </table>
     </div>
+    <div class="info-msg" id="info-container">
+      <span id="infobox">&nbsp;</span>
+    </div>
   </div>
 <script>
   (function () {
-    var updateText = function(text) {
-      document.getElementById("infobox").innerText = text;
+    const InfoBox = document.getElementById("infobox");
+    const MessageTypeMap = {
+      "INFO": "info-msg",
+      "WARNING": "warning-msg",
+      "ERROR": "error-msg",
+    };
+
+    const updateInfo = function(payload) {
+      InfoBox.innerText = payload.message;
+      InfoBox.parentElement.classList = [MessageTypeMap[payload.message_type]];
     }
 
-    var ws;
-    var initialise = function () {
+    function getGameId() {
+      const u = new URL(window.location.href);
+      return u.searchParams.get("gid");
+    }
+
+    let ws;
+    const initialise = function (currentGameId, cb) {
       if (ws) {
         return false;
       }
       ws = new WebSocket("ws://localhost:8080/play");
       ws.onopen = function (evt) {
-        updateText("Connected to the game!");
+        cb()
       }
       ws.onclose = function (evt) {
-        updateText("Lost connection to the game...");
+        updateInfo({
+          "message": "Lost connection to the game..",
+          "message_type": "ERROR"
+        });
         ws = null;
       }
       ws.onmessage = function (evt) {
         try {
-          var payload = JSON.parse(evt.data);
-          updateBoard(payload.board)
-          updateText(payload.message ? payload.message : "...");
+          const payload = JSON.parse(evt.data);
+          if (payload.game_id !== null
+            && payload.game_id !== ""
+            && (currentGameId === null || payload.game_id !== currentGameId)) {
+            window.location = "?gid=" + payload.game_id;
+          } else {
+            updateBoard(payload.board)
+            updateInfo(payload);
+          }
         } catch (SyntaxError) {
           // console.warn("Error parsing response:", evt.data)
-          updateText(evt.data);
+          updateInfo(evt.data);
         }
       }
       ws.onerror = function (evt) {
-        updateText("Something went wrong...");
+        updateInfo({"message": "Something went wrong...", "message_type": "ERROR"});
       }
       return false;
     };
 
-    var positions = document.getElementsByClassName("tile");
-    var BOARD = [];
-    for (var i = 0; i < positions.length; i++) {
-      var tile = positions.item(i)
+    function makeRequest(command, position, gameId, message) {
+      return JSON.stringify({
+        "command": command,
+        "position": position,
+        "game_id": gameId,
+        "message": message,
+      });
+    }
+
+    function play(position) {
+      return makeRequest("PLAY", position, null, null);
+    }
+
+    function create() {
+      return makeRequest("CREATE", null, null, null);
+    }
+
+    function join(gameId) {
+      return makeRequest("JOIN", null, gameId, null);
+    }
+
+    const positions = document.getElementsByClassName("tile");
+    let BOARD = [];
+    for (let i = 0; i < positions.length; i++) {
+      const tile = positions.item(i)
       BOARD[tile.dataset.pos] = tile;
       tile.addEventListener("click", function(pos) {
         return function(e) {
-          ws ? ws.send(JSON.stringify({"position": pos})) : null;
+          ws ? ws.send(play(pos)) : null;
         }
       }(i));
     }
 
-    var EMPTY = "&nbsp;";
+    const EMPTY = "&nbsp;";
     function updateBoard(board) {
       if (board.length !== BOARD.length) {
         console.warn("What game you playing..");
         return
       }
 
-      for (var i = 0; i < board.length; i++) {
+      for (let i = 0; i < board.length; i++) {
         if (board[i] === 0) {
           BOARD[i].innerHTML = EMPTY;
           BOARD[i].classList.remove("tile--filled");
@@ -138,7 +228,15 @@
         }
       }
     }
-    initialise();
+
+    const gameId = getGameId();
+    initialise(gameId, function() {
+      if (gameId !== null) {
+        ws.send(join(gameId));
+      } else {
+        ws.send(create());
+      }
+    });
   }());
 </script>
 </body>

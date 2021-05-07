@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -8,138 +10,126 @@ import (
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
-	//"strconv"
-	"sync"
 )
 
 var addr = flag.String("addr", "localhost:8080", "http service address")
 
 var upgrader = websocket.Upgrader{} // use default options
 
-type State int8
+type Session struct {
+	id   string
+	game *Game
 
-const (
-	X State = 1
-	O State = 2
-)
-
-func (s State) isX() bool {
-	return s == X
-}
-
-func (s State) isO() bool {
-	return s == O
-}
-
-func (s State) isEmpty() bool {
-	return !s.isX() && !s.isO()
-}
-
-// for debugging purposes
-func (game *Game) getRepresentation() string {
-	repr := ""
-	for index, pos := range game.Board {
-		if pos.isEmpty() {
-			repr += "_"
-		} else if pos.isX() {
-			repr += "X"
-		} else if pos.isO() {
-			repr += "O"
-		}
-		if (index+1)%3 == 0 {
-			repr += "\n"
-		} else {
-			repr += "|"
-		}
-	}
-	return repr
-}
-
-func (game *Game) printBoard() {
-	log.Println(game.getRepresentation())
-}
-
-const SIZE = 3
-
-type Sol struct {
-	s State
-
-	// set to -1 to invalidate
-	count int8
-}
-
-type Game struct {
-	// represent state of the board
-	Board    [SIZE * SIZE]State
-	Solution [SIZE*SIZE + 2]Sol
-
-	Moves int8
-
-	// game ends when Moves == (SIZE * SIZE) or when someone wins
-	Done bool
-
-	// maintain connections for both players
-	PlayerOne *Player
-	PlayerTwo *Player
+	// maintain players for both players
+	PlayerX *Player
+	PlayerO *Player
 
 	// to send to players
-	Broadcast chan BroadcastMessage
+	Broadcast chan SystemResponse
 
 	// messages or moves incoming from user
 	Inputs chan InternalUserMessage
-
-	// locking mechanism for operations on the board
-	mutex sync.RWMutex
 }
 
-func createGame() *Game {
-	g := Game{}
-	g.Broadcast = make(chan BroadcastMessage)
-	g.Inputs = make(chan InternalUserMessage)
-	return &g
-}
-
-func (game *Game) getCurrentPlayer() State {
-	if game.Moves%int8(2) == 0 {
-		return X
+func (session *Session) setPlayer(player *Player, c State) {
+	if c == X {
+		player.setChar(X)
+		session.PlayerX = player
+	} else if c == O {
+		player.setChar(O)
+		session.PlayerO = player
 	} else {
-		return O
+		log.Printf("Got %d for setPlayer (!?)\n", c)
+		return
+	}
+	player.session = session
+}
+
+func createGameId() (string, error) {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "", errors.New("cannot get random bytes")
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func (master *Master) newSession(player *Player) *Session {
+	session := &Session{}
+	session.game = &Game{}
+	session.Broadcast = make(chan SystemResponse)
+	session.Inputs = make(chan InternalUserMessage)
+	session.setPlayer(player, X)
+	session.id, _ = createGameId()
+	master.sessions[session.id] = session
+	go session.processInputs()
+	go session.processBroadcast()
+	return session
+}
+
+func (session *Session) message(typ MessageType, text string) SystemResponse {
+	return SystemResponse{
+		session.id,
+		session.game.Board,
+		session.game.getCurrentPlayer(),
+		EMPTY,
+		text,
+		typ,
+		//session.game.Winner,
 	}
 }
 
-// UserMessage incoming payload from user
-type UserMessage struct {
-	//Move     State `json:"move"`
-	Position int `json:"position"`
-
-	// for trash-talk
-	Message string `json:"message"`
+func systemResponse(typ MessageType, text string) SystemResponse {
+	resp := SystemResponse{}
+	resp.Message = text
+	resp.MessageType = typ
+	return resp
 }
 
-type InternalUserMessage struct {
-	message UserMessage
-	player  *Player
+func (session *Session) broadcast(message string) {
+	// send info message to all recipients
+	session.Broadcast <- session.message(INFO, message)
 }
 
-// BroadcastMessage response from server
-// Represents game state, current player and any message
-type BroadcastMessage struct {
-	Board         [SIZE * SIZE]State `json:"board"`
-	CurrentPlayer State              `json:"current_player"`
-	Message       string             `json:"message"`
+func (session *Session) warning(message string) {
+	session.Broadcast <- session.message(WARNING, message)
 }
 
-func (game *Game) broadcast(message string) {
-	msg := BroadcastMessage{game.Board, game.getCurrentPlayer(), message}
-	game.Broadcast <- msg
+func sendMessage(con *websocket.Conn, message []byte) {
+	err := con.WriteMessage(websocket.TextMessage, message)
+	if err != nil {
+		log.Println("Error writing message:", err)
+	}
 }
 
 type Player struct {
-	connection *websocket.Conn
+	conn *websocket.Conn
 
 	// whether player is X or O
-	char  State
-	moves chan UserMessage
+	char    State
+	moves   chan UserMessage
+	session *Session
+}
+
+func (player *Player) message(typ MessageType, text string) {
+	var payload []byte
+	if player.session != nil {
+		payload, _ = json.Marshal(player.session.message(typ, text))
+	} else {
+		payload, _ = json.Marshal(systemResponse(typ, text))
+	}
+	sendMessage(player.conn, payload)
+}
+
+func (player *Player) info(text string) {
+	player.message(INFO, text)
+}
+
+func (player *Player) warning(text string) {
+	player.message(WARNING, text)
+}
+
+func (player *Player) error(text string) {
+	player.message(ERROR, text)
 }
 
 func getCharText(move State) string {
@@ -152,182 +142,150 @@ func getCharText(move State) string {
 	}
 }
 
-// returns true if board is in end-state and "move" has won
-func (game *Game) updateSolution(pos int, move State) bool {
-	x, y := pos/SIZE, pos%SIZE
-	row, col := x, y+SIZE
-	var toCheck = []int{row, col}
-
-	// add check for SIZE % 2 == 1 if it becomes dynamic
-	flippedY := 2*(SIZE/2) - y
-	if x == y {
-		toCheck = append(toCheck, len(game.Solution)-1)
+func (session *Session) players() []*Player {
+	var connections []*Player
+	if session.PlayerX != nil {
+		connections = append(connections, session.PlayerX)
 	}
-	if x == flippedY {
-		toCheck = append(toCheck, len(game.Solution)-2)
-	}
-
-	for _, v := range toCheck {
-		//log.Printf(
-		//	"fin. v=%d, pos=%d, move=%s (x=%d, y=%d, fY=%d)",
-		//	v, pos, getCharText(move), x, y, flippedY)
-
-		if game.Solution[v].count == -1 {
-			continue
-		}
-
-		if game.Solution[v].count == 0 {
-			// initial condition
-			game.Solution[v] = Sol{move, 1}
-		} else if game.Solution[v].s != move {
-			// contains some other state already, invalidate
-			game.Solution[v].count = -1
-		} else {
-			game.Solution[v].count += 1
-			if game.Solution[v].count >= SIZE {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// Assumes player-check is done by caller
-func (game *Game) update(pos int, move State) (bool, error) {
-	if pos > len(game.Board) {
-		return false, errors.New("not found")
-	} else if !game.Board[pos].isEmpty() {
-		return false, errors.New("this seat is taken")
-	} else {
-		game.Board[pos] = move
-		game.Moves++
-		return game.updateSolution(pos, move), nil
-	}
-}
-
-func (game *Game) connections() []*websocket.Conn {
-	var connections []*websocket.Conn
-	if game.PlayerOne != nil {
-		connections = append(connections, game.PlayerOne.connection)
-	}
-	if game.PlayerTwo != nil {
-		connections = append(connections, game.PlayerTwo.connection)
+	if session.PlayerO != nil {
+		connections = append(connections, session.PlayerO)
 	}
 	return connections
 }
 
-func (game *Game) processInputs() {
+func (session *Session) processInputs() {
 	for {
 		select {
-		case i := <-game.Inputs:
-			if len(game.connections()) != 2 {
-				game.broadcast("Wait for all players to join!")
-			} else if i.player.char == game.getCurrentPlayer() && !game.Done {
-				if finished, err := game.update(i.message.Position, i.player.char); err != nil {
-					sendMessage(i.player.connection, []byte(fmt.Sprint(err)))
+		case cmd := <-session.Inputs:
+			if len(session.players()) != 2 {
+				session.warning("Wait for all players to join!")
+			} else if cmd.player.char == session.game.getCurrentPlayer() && !session.game.Done {
+				if won, err := session.game.update(cmd.message.Position, cmd.player.char); err != nil {
+					cmd.player.error(fmt.Sprint(err))
 				} else {
-					game.Done = finished || game.Moves == int8(len(game.Board))
+					session.game.Done = won || session.game.isOver()
 					var text string
-					if finished {
-						text = getCharText(i.player.char) + " has won!"
+					if won {
+						text = getCharText(cmd.player.char) + " has won!"
+					} else if session.game.isOver() {
+						text = "Game over! It's a draw 😔"
 					} else {
 						text = "..."
 					}
-					game.broadcast(text)
+					session.broadcast(text)
 				}
 			} else {
-				if game.Done {
-					sendMessage(i.player.connection, []byte("Game's done, go home!"))
+				if session.game.Done {
+					cmd.player.error("Game is over! Hit \"New Game\" to start another 🕹️")
 				} else {
-					sendMessage(i.player.connection, []byte("not your turn yet!"))
+					cmd.player.error("It's not your turn yet 😠")
 				}
 			}
 		}
 	}
 }
 
-func (game *Game) processBroadcast() {
+func (session *Session) processBroadcast() {
 	for {
 		select {
-		case b := <-game.Broadcast:
-			for _, c := range game.connections() {
-				payload, _ := json.Marshal(b)
-				sendMessage(c, payload)
+		case resp := <-session.Broadcast:
+			for _, p := range session.players() {
+				// override player char
+				resp.Char = p.char
+				payload, _ := json.Marshal(resp)
+				sendMessage(p.conn, payload)
 			}
 		}
+	}
+}
+
+func (session *Session) kick(c *websocket.Conn) {
+	if session.PlayerX != nil && session.PlayerX.conn == c {
+		//log.Println("closing..")
+		session.PlayerX = nil
+		session.broadcast("X has left the game...")
+	} else if session.PlayerO != nil && session.PlayerO.conn == c {
+		//log.Println("closing..")
+		session.PlayerO = nil
+		session.broadcast("O has left the game...")
 	}
 }
 
 type Master struct {
 	// keep track of all games on the server
-	Games map[string]*Game
-}
-
-func sendMessage(con *websocket.Conn, message []byte) {
-	err := con.WriteMessage(websocket.TextMessage, message)
-	if err != nil {
-		log.Println("Error writing message:", err)
-	}
+	sessions map[string]*Session
 }
 
 var master = Master{}
 
-func createPlayer(conn *websocket.Conn, char State) *Player {
-	return &Player{conn, char, make(chan UserMessage)}
+func (player *Player) setChar(s State) {
+	if !player.char.isEmpty() {
+		log.Println("This shouldn't happen")
+	}
+	player.char = s
+}
+
+func (player *Player) joinGame(gameId string) {
+	session, found := master.sessions[gameId]
+	if !found {
+		player.error("Game not found!")
+		return
+	}
+
+	if session.PlayerX == nil {
+		session.setPlayer(player, X)
+		player.info("You've joined the game! Share this page with someone to play against")
+	} else if session.PlayerO == nil {
+		session.setPlayer(player, O)
+		player.info("You've joined the game! Let's go!")
+	} else {
+		player.error("Can't join this game!")
+	}
+}
+
+func createPlayer(conn *websocket.Conn) *Player {
+	return &Player{conn, 0, make(chan UserMessage), nil}
 }
 
 func play(w http.ResponseWriter, r *http.Request) {
-	c, err := upgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("upgrade:", err)
 		return
 	}
 
-	var p *Player
-	game := master.Games["game1"]
-
-	defer func(c *websocket.Conn, game *Game) {
+	player := createPlayer(conn)
+	defer func(c *websocket.Conn, player *Player) {
 		err := c.Close()
 		if err != nil {
 			log.Println("Error closing websocket:", err)
 		}
-
-		if game.PlayerOne != nil && game.PlayerOne.connection == c {
-			//log.Println("closing..")
-			game.PlayerOne = nil
-			game.broadcast("Someone left the game...")
-		} else if game.PlayerTwo != nil && game.PlayerTwo.connection == c {
-			//log.Println("closing..")
-			game.PlayerTwo = nil
-			game.broadcast("Someone left the game...")
+		if player.session != nil {
+			player.session.kick(player.conn)
 		}
-	}(c, game)
-
-	if game.PlayerOne == nil {
-		p = createPlayer(c, X)
-		game.PlayerOne = p
-		game.broadcast("Player one has joined")
-	} else if game.PlayerTwo == nil {
-		p = createPlayer(c, O)
-		game.PlayerTwo = p
-		game.broadcast("Player two has joined, let's begin!")
-	} else {
-		p = nil
-		sendMessage(c, []byte("Cannot join this game!"))
-		return
-	}
+	}(conn, player)
 
 	for {
-		_, message, err := c.ReadMessage()
+		_, message, err := conn.ReadMessage()
 		if err != nil {
-			log.Println("read:", err)
+			log.Println("Error reading from ws:", err)
 			break
 		}
+
 		var msg UserMessage
 		if err = json.Unmarshal(message, &msg); err != nil {
-			sendMessage(c, []byte("Invalid message format!"))
-		} else {
-			game.Inputs <- InternalUserMessage{msg, p}
+			player.error("Invalid command")
+			continue
+		}
+
+		switch msg.Command {
+		case JOIN:
+			player.joinGame(msg.GameId)
+		case CREATE:
+			session := master.newSession(player)
+			player.info(fmt.Sprintf("Created game (id=%s)", session.id))
+		case PLAY:
+			player.session.Inputs <- InternalUserMessage{msg, player}
 		}
 	}
 }
@@ -337,10 +295,7 @@ func home(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	master.Games = make(map[string]*Game)
-	master.Games["game1"] = createGame()
-	go (master.Games["game1"]).processInputs()
-	go (master.Games["game1"]).processBroadcast()
+	master.sessions = make(map[string]*Session)
 
 	log.Println("Starting...")
 	flag.Parse()
