@@ -42,6 +42,6 @@ type SystemResponse struct {
 	Char          State              `json:"char"`
 	Message       string             `json:"message"`
 	MessageType   MessageType        `json:"message_type"`
-	//GameOver      bool               `json:"game_over"`
-	//Winner        State              `json:"winner"`
+	GameOver      bool               `json:"game_over"`
+	Winner        State              `json:"winner"`
 }

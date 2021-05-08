@@ -49,7 +49,6 @@
       display: flex;
       flex-direction: column;
       justify-content: center;
-      /*align-items: center;*/
     }
     .board th, .board td {
       border: 4px dashed darkgray;
@@ -59,7 +58,7 @@
       border-collapse: collapse;
     }
     .board {
-      font-family: "serif";
+      font-family: cursive;
       font-size: 4rem;
       margin-top: 1rem;
     }
@@ -82,7 +81,7 @@
       max-width: 16rem;
       margin-top: 1rem;
     }
-    nav a {
+    .header a {
       color: #5e5e5e;
       text-decoration: none;
       background-color: lightgoldenrodyellow;
@@ -90,14 +89,30 @@
       border: 1px solid #bfbfbf;
       border-radius: 4px;
     }
+    .hidden {
+      display: none;
+    }
+    .player {
+      float: right;
+    }
+    #player__char {
+      background-color: lightgoldenrodyellow;
+      padding: 0 4px;
+      font-weight: bold;
+      border-radius: 4px;
+      font-size: 1.2rem;
+      font-family: cursive;
+      border: 1px solid #b3b3b3;
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>Tic Tac Go!</h1>
-    <nav>
+    <div class="header">
       <a href="/">New Game</a>
-    </nav>
+      <span class="hidden player">Playing as <span id="player__char">X</span></span>
+    </div>
     <div class="board">
       <table>
         <tr>
@@ -128,11 +143,37 @@
       "INFO": "info-msg",
       "WARNING": "warning-msg",
       "ERROR": "error-msg",
+      "SUCCESS": "success-msg",
     };
+    const char = document.getElementById("player__char");
 
     const updateInfo = function(payload) {
-      InfoBox.innerText = payload.message;
-      InfoBox.parentElement.classList = [MessageTypeMap[payload.message_type]];
+      let message = payload.message,
+        messageType = payload.message_type;
+      if (payload.game_over
+        && payload.message.toLowerCase().includes("has won")) {
+        if (payload.char === payload.winner) {
+          message = "You won! 🎉"; messageType = "SUCCESS";
+        } else {
+          message = "You lost 😭"; messageType = "ERROR";
+        }
+      } else if (payload.message === ""){
+        message = payload.current_player === payload.char ? "Your turn...": "Opponent's turn...";
+      }
+      InfoBox.innerText = message;
+
+      InfoBox.parentElement.classList = [MessageTypeMap[messageType]];
+      // set player character (X or O)
+      if (payload.char > 0) {
+        char.innerText = payload.char === 1 ? "X" : "O";
+        char.parentElement.classList.remove("hidden");
+      }
+    }
+
+    function buildWebsocketURL() {
+      const scheme = window.location.protocol === "https:" ? "wss://" : "ws://",
+        host = window.location.host;
+      return scheme + host + "/play";
     }
 
     function getGameId() {
@@ -145,7 +186,7 @@
       if (ws) {
         return false;
       }
-      ws = new WebSocket("ws://localhost:8080/play");
+      ws = new WebSocket(buildWebsocketURL());
       ws.onopen = function (evt) {
         cb()
       }
@@ -205,7 +246,7 @@
       const tile = positions.item(i)
       BOARD[tile.dataset.pos] = tile;
       tile.addEventListener("click", function(pos) {
-        return function(e) {
+        return function(_e) {
           ws ? ws.send(play(pos)) : null;
         }
       }(i));
@@ -214,7 +255,7 @@
     const EMPTY = "&nbsp;";
     function updateBoard(board) {
       if (board.length !== BOARD.length) {
-        console.warn("What game you playing..");
+        console.warn("monkaS...");
         return
       }
 

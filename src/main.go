@@ -74,7 +74,8 @@ func (session *Session) message(typ MessageType, text string) SystemResponse {
 		EMPTY,
 		text,
 		typ,
-		//session.game.Winner,
+		session.game.isOver(),
+		session.game.Winner,
 	}
 }
 
@@ -111,12 +112,14 @@ type Player struct {
 }
 
 func (player *Player) message(typ MessageType, text string) {
-	var payload []byte
+	var resp SystemResponse
 	if player.session != nil {
-		payload, _ = json.Marshal(player.session.message(typ, text))
+		resp = player.session.message(typ, text)
 	} else {
-		payload, _ = json.Marshal(systemResponse(typ, text))
+		resp = systemResponse(typ, text)
 	}
+	resp.Char = player.char
+	payload, _ := json.Marshal(resp)
 	sendMessage(player.conn, payload)
 }
 
@@ -159,23 +162,23 @@ func (session *Session) processInputs() {
 		case cmd := <-session.Inputs:
 			if len(session.players()) != 2 {
 				session.warning("Wait for all players to join!")
-			} else if cmd.player.char == session.game.getCurrentPlayer() && !session.game.Done {
-				if won, err := session.game.update(cmd.message.Position, cmd.player.char); err != nil {
+			} else if cmd.player.char == session.game.getCurrentPlayer() && !session.game.isOver() {
+				if err := session.game.update(cmd.message.Position, cmd.player.char); err != nil {
 					cmd.player.error(fmt.Sprint(err))
 				} else {
-					session.game.Done = won || session.game.isOver()
 					var text string
-					if won {
+					if session.game.Winner != EMPTY {
 						text = getCharText(cmd.player.char) + " has won!"
 					} else if session.game.isOver() {
 						text = "Game over! It's a draw 😔"
 					} else {
-						text = "..."
+						// game's still on
+						text = ""
 					}
 					session.broadcast(text)
 				}
 			} else {
-				if session.game.Done {
+				if session.game.isOver() {
 					cmd.player.error("Game is over! Hit \"New Game\" to start another 🕹️")
 				} else {
 					cmd.player.error("It's not your turn yet 😠")
@@ -236,8 +239,10 @@ func (player *Player) joinGame(gameId string) {
 		session.setPlayer(player, X)
 		player.info("You've joined the game! Share this page with someone to play against")
 	} else if session.PlayerO == nil {
+		// improve messages for various states of the game (not started, midway, over)
 		session.setPlayer(player, O)
 		player.info("You've joined the game! Let's go!")
+		session.PlayerX.info("O has joined the game, let's go!")
 	} else {
 		player.error("Can't join this game!")
 	}

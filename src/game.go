@@ -44,6 +44,7 @@ type Game struct {
 
 	// game ends when Moves == (SIZE * SIZE) or when someone wins
 	Done bool
+	Winner State
 
 	// locking mechanism for operations on the board
 	mutex sync.RWMutex
@@ -58,7 +59,7 @@ func (game *Game) getCurrentPlayer() State {
 }
 
 func (game *Game) isOver() bool {
-	return game.Moves == int8(len(game.Board))
+	return game.Winner != EMPTY || game.Moves == int8(len(game.Board))
 }
 
 // for debugging purposes
@@ -125,17 +126,22 @@ func (game *Game) updateSolution(pos int, move State) bool {
 	return false
 }
 
-// returns (bool, error)
-// bool = true if "move" at "pos" resulted in a win, false otherwise
+// returns error
 // error !=nil if the move is illegal (outside the board, or if position on board already exists)
-func (game *Game) update(pos int, move State) (bool, error) {
+func (game *Game) update(pos int, move State) error {
 	if pos > len(game.Board) {
-		return false, errors.New("not found")
+		return errors.New("not found")
 	} else if !game.Board[pos].isEmpty() {
-		return false, errors.New("this seat is taken")
+		return errors.New("this seat is taken")
+	} else if game.isOver() {
+		return errors.New("game's over, can't play anymore")
 	} else {
 		game.Board[pos] = move
 		game.Moves++
-		return game.updateSolution(pos, move), nil
+		won := game.updateSolution(pos, move)
+		if won {
+			game.Winner = move
+		}
+		return nil
 	}
 }
