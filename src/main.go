@@ -305,6 +305,9 @@ func main() {
 	log.Println("Starting...")
 	flag.Parse()
 	log.SetFlags(0)
+
+	fs := http.FileServer(http.Dir("./static"))
+	http.Handle("/static/", http.StripPrefix("/static/", fs))
 	http.HandleFunc("/play", play)
 	http.HandleFunc("/", home)
 	log.Fatal(http.ListenAndServe(*addr, nil))

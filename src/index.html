@@ -146,6 +146,10 @@
       "SUCCESS": "success-msg",
     };
     const char = document.getElementById("player__char");
+    let ping = new Audio("static/sharp.wav"),
+      win = new Audio("static/cheer.mp3"),
+      lose = new Audio("static/sad.mp3");
+    ping.volume = .1;
 
     const updateInfo = function(payload) {
       let message = payload.message,
@@ -154,11 +158,14 @@
         && payload.message.toLowerCase().includes("has won")) {
         if (payload.char === payload.winner) {
           message = "You won! 🎉"; messageType = "SUCCESS";
+          win.play()
         } else {
           message = "You lost 😭"; messageType = "ERROR";
+          lose.play()
         }
       } else if (payload.message === ""){
         message = payload.current_player === payload.char ? "Your turn...": "Opponent's turn...";
+        ping.play();
       }
       InfoBox.innerText = message;
 
