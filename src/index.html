@@ -28,12 +28,12 @@
 
     .warning-msg {
       color: #9F6000;
-      background-color: #FEEFB3;
+      background-color: #fff0c4;
     }
 
     .error-msg {
       color: #D8000C;
-      background-color: #ffc9c9;
+      background-color: #ffdada;
     }
   </style>
   <style>
@@ -58,13 +58,15 @@
       border-collapse: collapse;
     }
     .board {
-      font-family: cursive;
+      /*font-family: cursive;*/
+      font-family: monospace;
       font-size: 4rem;
       margin-top: 1rem;
     }
     .board td {
       width: 5rem;
       text-align: center;
+      user-select:none;
     }
     .tile {
       cursor: pointer;
@@ -96,7 +98,7 @@
       float: right;
     }
     #player__char {
-      padding: 0 4px;
+      padding: 4px;
       font-weight: bold;
       border-radius: 4px;
       font-size: 1.2rem;
@@ -110,11 +112,14 @@
       text-decoration: none;
     }
     h1, #player__char, .header a {
-      font-family: cursive;
+      /*font-family: cursive;*/
       color: #5e5e5e;
     }
     .rematch {
       margin-top: .5rem;
+    }
+    #conn-status a {
+      color: #059;
     }
   </style>
 </head>
@@ -123,7 +128,7 @@
     <h1>Tic Tac Go!</h1>
     <div class="header">
       <a href="/" id="new-game">New Game</a>
-      <span class="hidden player">Playing as <span id="player__char">X</span></span>
+      <span class="hidden player">Playing as <span id="player__char">🥚</span></span>
     </div>
     <div class="board">
       <table>
@@ -145,7 +150,7 @@
       </table>
     </div>
     <div class="info-msg" id="info-container">
-      <span id="infobox">&nbsp;</span>
+      <span id="infobox">Connecting...</span>
     </div>
     <div class="disconnected hidden" id="conn-status">
       <p>Disconnected… <a href="javascript:void(0);" onclick="window.location.reload();">Click to reload 🔄</a>
@@ -170,6 +175,9 @@
       lose = new Audio("static/sad.mp3");
     ping.volume = .1
     lose.volume = .5;
+
+    const CHAR_X = "✖",
+      CHAR_O = "⭕";
 
     const connStatus = document.getElementById("conn-status"),
       rematch = document.getElementById("rematch");
@@ -225,7 +233,7 @@
       InfoBox.parentElement.classList = [MessageTypeMap[messageType]];
       // set player character (X or O)
       if (payload.char > 0) {
-        char.innerText = payload.char === 1 ? "X" : "O";
+        char.innerText = payload.char === 1 ? CHAR_X : CHAR_O;
         char.parentElement.classList.remove("hidden");
       }
     }
@@ -339,7 +347,7 @@
           BOARD[i].innerHTML = EMPTY;
           BOARD[i].classList.remove("tile--filled");
         } else {
-          BOARD[i].innerHTML = board[i] === 1 ? "X" : "O";
+          BOARD[i].innerHTML = board[i] === 1 ? CHAR_X : CHAR_O;
           BOARD[i].classList.add("tile--filled");
         }
       }

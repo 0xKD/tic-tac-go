@@ -135,7 +135,7 @@ func (session *Session) warning(message string) {
 func sendMessage(con *websocket.Conn, message []byte) {
 	err := con.WriteMessage(websocket.TextMessage, message)
 	if err != nil {
-		log.Println("Error writing message:", err, string(message))
+		log.Println("Error writing message:", err)
 	}
 }
 
