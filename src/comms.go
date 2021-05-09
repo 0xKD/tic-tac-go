@@ -13,10 +13,11 @@ type UserMessage struct {
 type Command string
 
 const (
-	CREATE Command = "CREATE"
-	JOIN           = "JOIN"
-	PLAY           = "PLAY"
-	TALK           = "TALK"
+	CREATE  Command = "CREATE"
+	JOIN            = "JOIN"
+	PLAY            = "PLAY"
+	TALK            = "TALK"
+	REMATCH         = "REMATCH"
 )
 
 type InternalUserMessage struct {
@@ -37,6 +38,7 @@ const (
 // Represents game state, current player and any message
 type SystemResponse struct {
 	GameId        string             `json:"game_id"`
+	RematchId     string             `json:"rematch_id"`
 	Board         [SIZE * SIZE]State `json:"board"`
 	CurrentPlayer State              `json:"current_player"`
 	Char          State              `json:"char"`

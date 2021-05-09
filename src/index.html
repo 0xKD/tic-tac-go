@@ -113,6 +113,9 @@
       font-family: cursive;
       color: #5e5e5e;
     }
+    .rematch {
+      margin-top: .5rem;
+    }
   </style>
 </head>
 <body>
@@ -148,6 +151,9 @@
       <p>Disconnected… <a href="javascript:void(0);" onclick="window.location.reload();">Click to reload 🔄</a>
       </p>
     </div>
+    <div class="rematch hidden" id="rematch">
+      <a href="javascript:void(0)">Go again!</a>
+    </div>
   </div>
 <script>
   (function () {
@@ -162,21 +168,45 @@
     let ping = new Audio("static/sharp.wav"),
       win = new Audio("static/cheer.mp3"),
       lose = new Audio("static/sad.mp3");
-    ping.volume = .1;
+    ping.volume = .1
+    lose.volume = .5;
 
+    const connStatus = document.getElementById("conn-status"),
+      rematch = document.getElementById("rematch");
 
-    const connStatus = document.getElementById("conn-status")
+    const showRematch = function() {
+      rematch.classList.remove("hidden");
+    }
+    const hideRematch = function() {
+      rematch.classList.add("hidden");
+    }
+
     const onDisconnect = function() {
       connStatus.classList.remove("hidden");
+      hideRematch();
     }
     const clearDisconnect = function () {
       connStatus.classList.add("hidden");
     }
 
+    function updateRematchTimer(gameId,count) {
+      hideRematch();
+      updateInfo({"message": "Starting new game in " + count + "...", "message_type": "WARNING"})
+      if (count <= 0) {
+        joinGame(gameId)
+      } else {
+        setTimeout(updateRematchTimer, 1000, gameId, count-1);
+      }
+    }
+
     const updateInfo = function(payload) {
       let message = payload.message,
         messageType = payload.message_type;
-      if (payload.game_over
+      if (payload.rematch_id && payload.rematch_id.length > 0) {
+        updateRematchTimer(payload.rematch_id, 5);
+        message = "Starting new game in 5...";
+        messageType = "WARNING";
+      } else if (payload.game_over
         && payload.message.toLowerCase().includes("has won")) {
         if (payload.char === payload.winner) {
           message = "You won! 🎉"; messageType = "SUCCESS";
@@ -185,6 +215,7 @@
           message = "You lost 😭"; messageType = "ERROR";
           lose.play()
         }
+        showRematch();
       } else if (payload.message === ""){
         message = payload.current_player === payload.char ? "Your turn...": "Opponent's turn...";
         ping.play();
@@ -210,6 +241,10 @@
       return u.searchParams.get("gid");
     }
 
+    function joinGame(gameId) {
+      window.location = "?gid=" + gameId;
+    }
+
     let ws;
     const initialise = function (currentGameId, cb) {
       if (ws) {
@@ -231,7 +266,7 @@
           if (payload.game_id !== null
             && payload.game_id !== ""
             && (currentGameId === null || payload.game_id !== currentGameId)) {
-            window.location = "?gid=" + payload.game_id;
+            joinGame(payload.game_id);
           } else {
             updateBoard(payload.board)
             updateInfo(payload);
@@ -268,6 +303,10 @@
       return makeRequest("JOIN", null, gameId, null);
     }
 
+    function goAgain() {
+      return makeRequest("REMATCH", null, null, null);
+    }
+
     const positions = document.getElementsByClassName("tile");
     let BOARD = [];
     for (let i = 0; i < positions.length; i++) {
@@ -279,6 +318,14 @@
         }
       }(i));
     }
+
+    rematch.firstElementChild.addEventListener("click", function() {
+      if (ws !== null) {
+        ws.send(goAgain());
+        hideRematch();
+        updateInfo({"message": "Waiting for opponent...", "message_type": "WARNING"});
+      }
+    });
 
     const EMPTY = "&nbsp;";
     function updateBoard(board) {

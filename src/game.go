@@ -46,7 +46,7 @@ type Game struct {
 	Done bool
 	Winner State
 
-	// locking mechanism for operations on the board
+	// locking mechanism for operations on the board... that I should be using
 	mutex sync.RWMutex
 }
 

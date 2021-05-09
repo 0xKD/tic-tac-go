@@ -20,8 +20,9 @@ var addr = flag.String("addr", "localhost:8080", "http service address")
 var upgrader = websocket.Upgrader{} // use default options
 
 type Session struct {
-	id   string
-	game *Game
+	id        string
+	rematchId string
+	game      *Game
 
 	// maintain players for both players
 	PlayerX *Player
@@ -71,7 +72,7 @@ func (master *Master) newSession(player *Player) *Session {
 	go session.processBroadcast(wg)
 
 	// kill after some time
-	time.AfterFunc(120 * time.Second, master.waitKill(session.id, wg))
+	time.AfterFunc(120*time.Second, master.waitKill(session.id, wg))
 	return session
 }
 
@@ -92,7 +93,7 @@ func (master *Master) waitKill(gameId string, wg *sync.WaitGroup) func() {
 
 		wg.Wait()
 		for _, p := range session.players() {
-			log.Println("closing conn")
+			// this isn't ideal, but it also takes care of terminating the loop in "play()"
 			closeWebsocket(p.conn, p, false)
 		}
 
@@ -101,10 +102,10 @@ func (master *Master) waitKill(gameId string, wg *sync.WaitGroup) func() {
 	}
 }
 
-
 func (session *Session) message(typ MessageType, text string) SystemResponse {
 	return SystemResponse{
 		session.id,
+		session.rematchId,
 		session.game.Board,
 		session.game.getCurrentPlayer(),
 		EMPTY,
@@ -145,6 +146,7 @@ type Player struct {
 	char    State
 	moves   chan UserMessage
 	session *Session
+	rematch bool
 }
 
 func (player *Player) message(typ MessageType, text string) {
@@ -217,10 +219,17 @@ func (session *Session) processInputs(wg *sync.WaitGroup) {
 					} else if session.game.isOver() {
 						text = "Game over! It's a draw 😔"
 					} else {
-						// game's still on
+						// game's still on, frontend will show an appropriate message
 						text = ""
 					}
 					session.broadcast(text)
+				}
+			} else if cmd.message.Command == REMATCH {
+				cmd.player.rematch = true
+				if session.PlayerX.rematch && session.PlayerO.rematch && session.rematchId == "" {
+					newSession := master.newSession(cmd.player)
+					session.rematchId = newSession.id
+					session.broadcast("") // frontend will show dynamic message/timer
 				}
 			} else {
 				if session.game.isOver() {
@@ -246,7 +255,7 @@ func (session *Session) processBroadcast(wg *sync.WaitGroup) {
 			}
 
 			for _, p := range session.players() {
-				// override player char
+				// set player char
 				resp.Char = p.char
 				payload, _ := json.Marshal(resp)
 				sendMessage(p.conn, payload)
@@ -304,7 +313,7 @@ func (player *Player) joinGame(gameId string) {
 }
 
 func createPlayer(conn *websocket.Conn) *Player {
-	return &Player{conn, 0, make(chan UserMessage), nil}
+	return &Player{conn: conn, moves: make(chan UserMessage)}
 }
 
 func closeWebsocket(c *websocket.Conn, player *Player, communicate bool) {
@@ -350,6 +359,8 @@ func play(w http.ResponseWriter, r *http.Request) {
 		case CREATE:
 			session := master.newSession(player)
 			player.info(fmt.Sprintf("Created game (id=%s)", session.id))
+		case REMATCH:
+			fallthrough
 		case PLAY:
 			if player.session != nil {
 				player.session.Inputs <- InternalUserMessage{msg, player}
