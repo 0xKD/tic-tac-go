@@ -82,12 +82,12 @@
       margin-top: 1rem;
     }
     .header a {
-      color: #5e5e5e;
       text-decoration: none;
-      background-color: lightgoldenrodyellow;
-      padding: 4px;
-      border: 1px solid #bfbfbf;
+      padding: 0 4px;
+      border: 2px solid #b3b3b3;
       border-radius: 4px;
+      font-weight: bold;
+      font-size: 1.2rem;
     }
     .hidden {
       display: none;
@@ -96,13 +96,22 @@
       float: right;
     }
     #player__char {
-      background-color: lightgoldenrodyellow;
       padding: 0 4px;
       font-weight: bold;
       border-radius: 4px;
       font-size: 1.2rem;
+      border: 2px solid #b3b3b3;
+    }
+    .disconnected {
+      font-size: .9rem;
+      color: red;
+    }
+    .disconnected a {
+      text-decoration: none;
+    }
+    h1, #player__char, .header a {
       font-family: cursive;
-      border: 1px solid #b3b3b3;
+      color: #5e5e5e;
     }
   </style>
 </head>
@@ -110,7 +119,7 @@
   <div class="container">
     <h1>Tic Tac Go!</h1>
     <div class="header">
-      <a href="/">New Game</a>
+      <a href="/" id="new-game">New Game</a>
       <span class="hidden player">Playing as <span id="player__char">X</span></span>
     </div>
     <div class="board">
@@ -135,6 +144,10 @@
     <div class="info-msg" id="info-container">
       <span id="infobox">&nbsp;</span>
     </div>
+    <div class="disconnected hidden" id="conn-status">
+      <p>Disconnected… <a href="javascript:void(0);" onclick="window.location.reload();">Click to reload 🔄</a>
+      </p>
+    </div>
   </div>
 <script>
   (function () {
@@ -150,6 +163,15 @@
       win = new Audio("static/cheer.mp3"),
       lose = new Audio("static/sad.mp3");
     ping.volume = .1;
+
+
+    const connStatus = document.getElementById("conn-status")
+    const onDisconnect = function() {
+      connStatus.classList.remove("hidden");
+    }
+    const clearDisconnect = function () {
+      connStatus.classList.add("hidden");
+    }
 
     const updateInfo = function(payload) {
       let message = payload.message,
@@ -195,16 +217,15 @@
       }
       ws = new WebSocket(buildWebsocketURL());
       ws.onopen = function (evt) {
+        clearDisconnect();
         cb()
       }
       ws.onclose = function (evt) {
-        updateInfo({
-          "message": "Lost connection to the game..",
-          "message_type": "ERROR"
-        });
+        onDisconnect();
         ws = null;
       }
       ws.onmessage = function (evt) {
+        clearDisconnect();
         try {
           const payload = JSON.parse(evt.data);
           if (payload.game_id !== null
