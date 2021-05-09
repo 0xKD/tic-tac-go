@@ -10,6 +10,9 @@ import (
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
+	"sync"
+	"time"
+	_ "time"
 )
 
 var addr = flag.String("addr", "localhost:8080", "http service address")
@@ -61,10 +64,43 @@ func (master *Master) newSession(player *Player) *Session {
 	session.setPlayer(player, X)
 	session.id, _ = createGameId()
 	master.sessions[session.id] = session
-	go session.processInputs()
-	go session.processBroadcast()
+
+	// we need a waitGroup since we want the worker goroutine to finish
+	wg := &sync.WaitGroup{}
+	go session.processInputs(wg)
+	go session.processBroadcast(wg)
+
+	// kill after some time
+	time.AfterFunc(120 * time.Second, master.waitKill(session.id, wg))
 	return session
 }
+
+func (master *Master) waitKill(gameId string, wg *sync.WaitGroup) func() {
+	return func() {
+		session, found := master.sessions[gameId]
+		if !found {
+			log.Println("Can't explain this..")
+			return
+		}
+
+		session.warning("Game terminated game due to inactivity 💀 - Start a new one!")
+		close(session.Broadcast)
+		<-session.Broadcast
+
+		close(session.Inputs)
+		<-session.Inputs
+
+		wg.Wait()
+		for _, p := range session.players() {
+			log.Println("closing conn")
+			closeWebsocket(p.conn, p, false)
+		}
+
+		// I assume this takes care of gc of everything relevant
+		delete(master.sessions, gameId)
+	}
+}
+
 
 func (session *Session) message(typ MessageType, text string) SystemResponse {
 	return SystemResponse{
@@ -98,7 +134,7 @@ func (session *Session) warning(message string) {
 func sendMessage(con *websocket.Conn, message []byte) {
 	err := con.WriteMessage(websocket.TextMessage, message)
 	if err != nil {
-		log.Println("Error writing message:", err)
+		log.Println("Error writing message:", err, string(message))
 	}
 }
 
@@ -156,10 +192,18 @@ func (session *Session) players() []*Player {
 	return connections
 }
 
-func (session *Session) processInputs() {
+// goroutine to handle I/O on the game session
+func (session *Session) processInputs(wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer wg.Done()
+
 	for {
 		select {
-		case cmd := <-session.Inputs:
+		case cmd, ok := <-session.Inputs:
+			if !ok {
+				return
+			}
+
 			if len(session.players()) != 2 {
 				session.warning("Wait for all players to join!")
 			} else if cmd.player.char == session.game.getCurrentPlayer() && !session.game.isOver() {
@@ -168,6 +212,7 @@ func (session *Session) processInputs() {
 				} else {
 					var text string
 					if session.game.Winner != EMPTY {
+						// this variation gets replaced on the front-end (checked using "has won")
 						text = getCharText(cmd.player.char) + " has won!"
 					} else if session.game.isOver() {
 						text = "Game over! It's a draw 😔"
@@ -188,10 +233,18 @@ func (session *Session) processInputs() {
 	}
 }
 
-func (session *Session) processBroadcast() {
+func (session *Session) processBroadcast(wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer wg.Done()
+
 	for {
 		select {
-		case resp := <-session.Broadcast:
+		case resp, ok := <-session.Broadcast:
+			//log.Println("broadcast:", resp)
+			if !ok {
+				return
+			}
+
 			for _, p := range session.players() {
 				// override player char
 				resp.Char = p.char
@@ -202,15 +255,17 @@ func (session *Session) processBroadcast() {
 	}
 }
 
-func (session *Session) kick(c *websocket.Conn) {
+func (session *Session) kick(c *websocket.Conn, communicate bool) {
 	if session.PlayerX != nil && session.PlayerX.conn == c {
-		//log.Println("closing..")
 		session.PlayerX = nil
-		session.broadcast("X has left the game...")
+		if communicate {
+			session.broadcast("X has left the game...")
+		}
 	} else if session.PlayerO != nil && session.PlayerO.conn == c {
-		//log.Println("closing..")
 		session.PlayerO = nil
-		session.broadcast("O has left the game...")
+		if communicate {
+			session.broadcast("O has left the game...")
+		}
 	}
 }
 
@@ -231,7 +286,7 @@ func (player *Player) setChar(s State) {
 func (player *Player) joinGame(gameId string) {
 	session, found := master.sessions[gameId]
 	if !found {
-		player.error("Game not found!")
+		player.error("Game not found! Hit \"New Game\" to start one")
 		return
 	}
 
@@ -252,6 +307,19 @@ func createPlayer(conn *websocket.Conn) *Player {
 	return &Player{conn, 0, make(chan UserMessage), nil}
 }
 
+func closeWebsocket(c *websocket.Conn, player *Player, communicate bool) {
+	err := c.Close()
+	if err != nil {
+		log.Println("Error closing websocket:", err)
+		// it may already be closed so don't bother sending a message
+		communicate = false
+	}
+
+	if player.session != nil {
+		player.session.kick(player.conn, communicate)
+	}
+}
+
 func play(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -260,21 +328,14 @@ func play(w http.ResponseWriter, r *http.Request) {
 	}
 
 	player := createPlayer(conn)
-	defer func(c *websocket.Conn, player *Player) {
-		err := c.Close()
-		if err != nil {
-			log.Println("Error closing websocket:", err)
-		}
-		if player.session != nil {
-			player.session.kick(player.conn)
-		}
-	}(conn, player)
+	defer closeWebsocket(conn, player, true)
 
+	// below section can perhaps also be a goroutine to make cleanup easier
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			log.Println("Error reading from ws:", err)
-			break
+			return
 		}
 
 		var msg UserMessage
@@ -290,7 +351,9 @@ func play(w http.ResponseWriter, r *http.Request) {
 			session := master.newSession(player)
 			player.info(fmt.Sprintf("Created game (id=%s)", session.id))
 		case PLAY:
-			player.session.Inputs <- InternalUserMessage{msg, player}
+			if player.session != nil {
+				player.session.Inputs <- InternalUserMessage{msg, player}
+			}
 		}
 	}
 }
