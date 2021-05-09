@@ -224,6 +224,8 @@
           lose.play()
         }
         showRematch();
+      } else if (payload.game_over && !payload.winner) {
+        showRematch();
       } else if (payload.message === ""){
         message = payload.current_player === payload.char ? "Your turn...": "Opponent's turn...";
         ping.play();
